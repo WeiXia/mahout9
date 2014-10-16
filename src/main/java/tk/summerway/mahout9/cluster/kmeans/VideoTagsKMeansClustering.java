@@ -12,6 +12,7 @@ import org.apache.mahout.clustering.kmeans.KMeansDriver;
 import org.apache.mahout.common.AbstractJob;
 import org.apache.mahout.common.HadoopUtil;
 import org.apache.mahout.common.Pair;
+import org.apache.mahout.common.distance.CosineDistanceMeasure;
 import org.apache.mahout.common.distance.EuclideanDistanceMeasure;
 import org.apache.mahout.common.distance.TanimotoDistanceMeasure;
 import org.apache.mahout.math.hadoop.stats.BasicStats;
@@ -168,12 +169,14 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         Path canopyCentroids = new Path(vectorPath , "canopy-centroids");
         Path clusterOutput = new Path(vectorPath , "clusters");
         // using canopy to chose initail cluster
-        CanopyDriver.run(vectorsFolder, 
+        CanopyDriver.run(conf,
+                vectorsFolder, 
                 canopyCentroids,
                 new EuclideanDistanceMeasure(), 
                 250, 
                 120, 
-                false, 
+                false,
+                0,
                 false);
         
         // run kmeans cluster
@@ -181,9 +184,9 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
                 vectorsFolder, 
                 new Path(canopyCentroids, "clusters-0"),
                 clusterOutput, 
-                new TanimotoDistanceMeasure(), 
+                new CosineDistanceMeasure(), 
                 0.01,
-                20, 
+                5, 
                 true, 
                 false);
     }
