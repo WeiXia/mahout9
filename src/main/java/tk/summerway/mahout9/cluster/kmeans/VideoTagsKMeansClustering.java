@@ -6,6 +6,14 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.util.List;
 
+import org.apache.commons.cli2.CommandLine;
+import org.apache.commons.cli2.Group;
+import org.apache.commons.cli2.Option;
+import org.apache.commons.cli2.OptionException;
+import org.apache.commons.cli2.builder.ArgumentBuilder;
+import org.apache.commons.cli2.builder.DefaultOptionBuilder;
+import org.apache.commons.cli2.builder.GroupBuilder;
+import org.apache.commons.cli2.commandline.Parser;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -15,13 +23,19 @@ import org.apache.hadoop.util.ToolRunner;
 import org.apache.mahout.clustering.kmeans.KMeansDriver;
 import org.apache.mahout.clustering.kmeans.RandomSeedGenerator;
 import org.apache.mahout.common.AbstractJob;
+import org.apache.mahout.common.ClassUtils;
+import org.apache.mahout.common.CommandLineUtil;
 import org.apache.mahout.common.HadoopUtil;
 import org.apache.mahout.common.Pair;
 import org.apache.mahout.common.StringTuple;
-import org.apache.mahout.common.distance.EuclideanDistanceMeasure;
+import org.apache.mahout.common.commandline.DefaultOptionCreator;
+import org.apache.mahout.common.distance.DistanceMeasure;
+import org.apache.mahout.common.distance.SquaredEuclideanDistanceMeasure;
 import org.apache.mahout.math.hadoop.stats.BasicStats;
 import org.apache.mahout.vectorizer.DictionaryVectorizer;
 import org.apache.mahout.vectorizer.HighDFWordsPruner;
+import org.apache.mahout.vectorizer.collocations.llr.LLRReducer;
+import org.apache.mahout.vectorizer.common.PartialVectorMerger;
 import org.apache.mahout.vectorizer.tfidf.TFIDFConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,7 +52,7 @@ import org.slf4j.LoggerFactory;
  *
  */
 public class VideoTagsKMeansClustering extends AbstractJob  {
-    
+
     private static final Logger log = LoggerFactory.getLogger(VideoTagsKMeansClustering.class);
 
     /**
@@ -64,36 +78,402 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
     
     private Configuration conf = null;
     
+    private static final String OP_TYPE_ONLY_VECTORIZE = "1";
+    
+    private static final String OP_TYPE_ONLY_CLUSTERING = "2";
+    
+    private String opType = null;
+    
+    private String inputDir = null;
+    
     // the minimum frequency of the feature in the entire corpus to be considered for inclusion in the sparse vector
-    private int minSupport = 5;
+    private int minSupport = 2;
     
     // ngram paras
     private int maxNGramSize = 1;
-    private int minLLRValue = 50;
+    private float minLLRValue = LLRReducer.DEFAULT_MIN_LLR;
 
     // document frequency paras
-    private int minDf = 5;
-    private int maxDFPercent = 50;
-    private int maxDFSigma = -1;
+    private int minDf = 1;
+    private int maxDFPercent = 99;
+    private double maxDFSigma = -1.0;
     
     // normalize para
-    private int norm = 2;
+    private float norm = PartialVectorMerger.NO_NORMALIZING;
     private boolean logNormalize = false;
     
     private int reduceTasks = 1;
-    private int chunkSize = 200;
+    private int chunkSize = 100;
     
-    private boolean sequentialAccessOutput = true;
-    private boolean namedVectors = true;
+    private boolean sequentialAccessOutput = false;
+    private boolean namedVectors = false;
     
     // kmeans para
-    private int k = 5;
-    private double convergenceDelta = 0.01;
-    private int maxIterations = 10;
+    private int kValue = -1;
+    private double convergenceDelta = 0.5;
+    private int maxIterations = 1;
+    private DistanceMeasure measure = null;
     
-    private void init() throws IOException {
+    private boolean init(String[] args) throws IOException {
+        if (!buildParse(args)) {
+            return false;
+        }
         conf = getConf();
 //        FileSystem fs = FileSystem.get(conf);
+        return true;
+    }
+    
+    private boolean buildParse(String[] args) {
+        DefaultOptionBuilder obuilder = new DefaultOptionBuilder();
+        ArgumentBuilder abuilder = new ArgumentBuilder();
+        GroupBuilder gbuilder = new GroupBuilder();
+        
+        Option opTypeOpt = obuilder
+                .withLongName("opType")
+                .withRequired(false)
+                .withArgument(
+                        abuilder.withName("opType").withMinimum(1)
+                                .withMaximum(1).create())
+                .withDescription(
+                        "1 prepare vectors; 2 run kmeans job; default do all things together")
+                .withShortName("ot").create();
+
+        Option inputDirOpt = DefaultOptionCreator.inputOption().create();
+//
+//        Option outputDirOpt = DefaultOptionCreator.outputOption().create();
+
+        Option minSupportOpt = obuilder
+                .withLongName("minSupport")
+                .withArgument(
+                        abuilder.withName("minSupport").withMinimum(1)
+                                .withMaximum(1).create())
+                .withDescription("(Optional) Minimum Support. Default Value: 2")
+                .withShortName("s").create();
+
+        // Option analyzerNameOpt =
+        // obuilder.withLongName("analyzerName").withArgument(
+        // abuilder.withName("analyzerName").withMinimum(1).withMaximum(1).create()).withDescription(
+        // "The class name of the analyzer").withShortName("a").create();
+
+        Option chunkSizeOpt = obuilder
+                .withLongName("chunkSize")
+                .withArgument(
+                        abuilder.withName("chunkSize").withMinimum(1)
+                                .withMaximum(1).create())
+                .withDescription(
+                        "The chunkSize in MegaBytes. Default Value: 100MB")
+                .withShortName("chunk").create();
+
+//        Option weightOpt = obuilder
+//                .withLongName("weight")
+//                .withRequired(false)
+//                .withArgument(
+//                        abuilder.withName("weight").withMinimum(1)
+//                                .withMaximum(1).create())
+//                .withDescription(
+//                        "The kind of weight to use. Currently TF or TFIDF. Default: TFIDF")
+//                .withShortName("wt").create();
+
+        Option minDFOpt = obuilder
+                .withLongName("minDF")
+                .withRequired(false)
+                .withArgument(
+                        abuilder.withName("minDF").withMinimum(1)
+                                .withMaximum(1).create())
+                .withDescription(
+                        "The minimum document frequency.  Default is 1")
+                .withShortName("md").create();
+
+        Option maxDFPercentOpt = obuilder
+                .withLongName("maxDFPercent")
+                .withRequired(false)
+                .withArgument(
+                        abuilder.withName("maxDFPercent").withMinimum(1)
+                                .withMaximum(1).create())
+                .withDescription(
+                        "The max percentage of docs for the DF.  Can be used to remove really high frequency terms."
+                                + " Expressed as an integer between 0 and 100. Default is 99.  If maxDFSigma is also set, "
+                                + "it will override this value.")
+                .withShortName("x").create();
+
+        Option maxDFSigmaOpt = obuilder
+                .withLongName("maxDFSigma")
+                .withRequired(false)
+                .withArgument(
+                        abuilder.withName("maxDFSigma").withMinimum(1)
+                                .withMaximum(1).create())
+                .withDescription(
+                        "What portion of the tf (tf-idf) vectors to be used, expressed in times the standard deviation (sigma) "
+                                + "of the document frequencies of these vectors. Can be used to remove really high frequency terms."
+                                + " Expressed as a double value. Good value to be specified is 3.0. In case the value is less "
+                                + "than 0 no vectors will be filtered out. Default is -1.0.  Overrides maxDFPercent")
+                .withShortName("xs").create();
+
+        Option minLLROpt = obuilder
+                .withLongName("minLLR")
+                .withRequired(false)
+                .withArgument(
+                        abuilder.withName("minLLR").withMinimum(1)
+                                .withMaximum(1).create())
+                .withDescription(
+                        "(Optional)The minimum Log Likelihood Ratio(Float)  Default is "
+                                + LLRReducer.DEFAULT_MIN_LLR)
+                .withShortName("ml").create();
+
+        Option numReduceTasksOpt = obuilder
+                .withLongName("numReducers")
+                .withArgument(
+                        abuilder.withName("numReducers").withMinimum(1)
+                                .withMaximum(1).create())
+                .withDescription(
+                        "(Optional) Number of reduce tasks. Default Value: 1")
+                .withShortName("nr").create();
+
+        Option powerOpt = obuilder
+                .withLongName("norm")
+                .withRequired(false)
+                .withArgument(
+                        abuilder.withName("norm").withMinimum(1).withMaximum(1)
+                                .create())
+                .withDescription(
+                        "The norm to use, expressed as either a float or \"INF\" if you want to use the Infinite norm.  "
+                                + "Must be greater or equal to 0.  The default is not to normalize")
+                .withShortName("n").create();
+
+        Option logNormalizeOpt = obuilder
+                .withLongName("logNormalize")
+                .withRequired(false)
+                .withDescription(
+                        "(Optional) Whether output vectors should be logNormalize. If set true else false")
+                .withShortName("lnorm").create();
+
+        Option maxNGramSizeOpt = obuilder
+                .withLongName("maxNGramSize")
+                .withRequired(false)
+                .withArgument(
+                        abuilder.withName("ngramSize").withMinimum(1)
+                                .withMaximum(1).create())
+                .withDescription(
+                        "(Optional) The maximum size of ngrams to create"
+                                + " (2 = bigrams, 3 = trigrams, etc) Default Value:1")
+                .withShortName("ng").create();
+
+        Option sequentialAccessVectorOpt = obuilder
+                .withLongName("sequentialAccessVector")
+                .withRequired(false)
+                .withDescription(
+                        "(Optional) Whether output vectors should be SequentialAccessVectors. If set true else false")
+                .withShortName("seq").create();
+
+        Option namedVectorOpt = obuilder
+                .withLongName("namedVector")
+                .withRequired(false)
+                .withDescription(
+                        "(Optional) Whether output vectors should be NamedVectors. If set true else false")
+                .withShortName("nv").create();
+
+//        Option overwriteOutput = obuilder.withLongName("overwrite")
+//                .withRequired(false)
+//                .withDescription("If set, overwrite the output directory")
+//                .withShortName("ow").create();
+        
+        Option helpOpt = obuilder.withLongName("help")
+                .withDescription("Print out help").withShortName("h").create();
+        
+        Option kValueOpt = obuilder
+                .withLongName("kValue")
+                .withRequired(true)
+                .withArgument(abuilder.withName("kValue").withMinimum(1).withMaximum(1).create())
+                .withDescription("k-means k value")
+                .withShortName("k").create();
+        
+        Option convergenceDeltaOpt = obuilder
+                .withLongName("convergenceDelta")
+                .withRequired(true)
+                .withArgument(abuilder.withName("convergenceDelta").withMinimum(1).withMaximum(1).create())
+                .withDescription("k-means convergenceDelta value")
+                .withShortName("delta").create();
+        
+        Option maxIterationsOpt = obuilder
+                .withLongName("maxIterations")
+                .withRequired(true)
+                .withArgument(abuilder.withName("maxIterations").withMinimum(1).withMaximum(1).create())
+                .withDescription("k-means maxIterations value")
+                .withShortName("mi").create();
+        
+        Option distanceMeasureOpt = obuilder
+                .withLongName("distanceMeasure")
+                .withRequired(true)
+                .withArgument(abuilder.withName("distanceMeasure").withMinimum(1).withMaximum(1).create())
+                .withDescription("k-means distance measure class name")
+                .withShortName("dm").create();
+
+        Group group = gbuilder.withName("Options").withOption(minSupportOpt)
+                .withOption(chunkSizeOpt)
+                .withOption(minDFOpt)
+                .withOption(maxDFSigmaOpt).withOption(maxDFPercentOpt)
+                .withOption(powerOpt)
+                .withOption(minLLROpt).withOption(numReduceTasksOpt)
+                .withOption(maxNGramSizeOpt)
+                .withOption(helpOpt).withOption(sequentialAccessVectorOpt)
+                .withOption(namedVectorOpt).withOption(logNormalizeOpt)
+                .withOption(opTypeOpt).withOption(inputDirOpt)
+                .withOption(kValueOpt)
+                .withOption(convergenceDeltaOpt)
+                .withOption(maxIterationsOpt)
+                .withOption(distanceMeasureOpt)
+                .create();
+        try {
+            Parser parser = new Parser();
+            parser.setGroup(group);
+            parser.setHelpOption(helpOpt);
+            CommandLine cmdLine = parser.parse(args);
+
+            if (cmdLine.hasOption(helpOpt)) {
+                CommandLineUtil.printHelp(group);
+                return false;
+            }
+
+//            Path inputDir = new Path((String) cmdLine.getValue(inputDirOpt));
+//            Path outputDir = new Path((String) cmdLine.getValue(outputDirOpt));
+            
+            chunkSize = 100;
+            if (cmdLine.hasOption(chunkSizeOpt)) {
+                chunkSize = Integer.parseInt((String) cmdLine
+                        .getValue(chunkSizeOpt));
+            }
+            log.info("chunkSize value: {}", chunkSize);
+            
+            minSupport = 2;
+            if (cmdLine.hasOption(minSupportOpt)) {
+                String minSupportString = (String) cmdLine
+                        .getValue(minSupportOpt);
+                minSupport = Integer.parseInt(minSupportString);
+            }
+            log.info("minSupport value: {}", minSupport);
+
+            maxNGramSize = 1;
+            if (cmdLine.hasOption(maxNGramSizeOpt)) {
+                try {
+                    maxNGramSize = Integer.parseInt(cmdLine.getValue(
+                            maxNGramSizeOpt).toString());
+                } catch (NumberFormatException ex) {
+                    log.warn("Could not parse ngram size option");
+                }
+            }
+            log.info("Maximum n-gram size is: {}", maxNGramSize);
+
+//            if (cmdLine.hasOption(overwriteOutput)) {
+//                HadoopUtil.delete(getConf(), outputDir);
+//            }
+
+            minLLRValue = LLRReducer.DEFAULT_MIN_LLR;
+            if (cmdLine.hasOption(minLLROpt)) {
+                minLLRValue = Float.parseFloat(cmdLine.getValue(minLLROpt)
+                        .toString());
+            }
+            log.info("Minimum LLR value: {}", minLLRValue);
+
+            reduceTasks = 1;
+            if (cmdLine.hasOption(numReduceTasksOpt)) {
+                reduceTasks = Integer.parseInt(cmdLine.getValue(
+                        numReduceTasksOpt).toString());
+            }
+            log.info("Number of reduce tasks: {}", reduceTasks);
+            
+            minDf = 1;
+            if (cmdLine.hasOption(minDFOpt)) {
+              minDf = Integer.parseInt(cmdLine.getValue(minDFOpt).toString());
+            }
+            log.info("minDf Value: {}", minDf);
+            maxDFPercent = 99;
+            if (cmdLine.hasOption(maxDFPercentOpt)) {
+              maxDFPercent = Integer.parseInt(cmdLine.getValue(maxDFPercentOpt).toString());
+            }
+            log.info("maxDFPercent Value: {}", maxDFPercent);
+            maxDFSigma = -1.0;
+            if (cmdLine.hasOption(maxDFSigmaOpt)) {
+              maxDFSigma = Double.parseDouble(cmdLine.getValue(maxDFSigmaOpt).toString());
+            }
+            log.info("maxDFSigma Value: {}", maxDFSigma);
+
+            norm = PartialVectorMerger.NO_NORMALIZING;
+            if (cmdLine.hasOption(powerOpt)) {
+              String power = cmdLine.getValue(powerOpt).toString();
+              if ("INF".equals(power)) {
+                norm = Float.POSITIVE_INFINITY;
+              } else {
+                norm = Float.parseFloat(power);
+              }
+            }
+            log.info("norm Value: {}", norm);
+
+            logNormalize = false;
+            if (cmdLine.hasOption(logNormalizeOpt)) {
+              logNormalize = true;
+            }
+            log.info("logNormalize Value: {}", logNormalize);
+            
+            sequentialAccessOutput = false;
+            if (cmdLine.hasOption(sequentialAccessVectorOpt)) {
+              sequentialAccessOutput = true;
+            }
+            log.info("sequentialAccessOutput Value: {}", sequentialAccessOutput);
+
+            namedVectors = false;
+            if (cmdLine.hasOption(namedVectorOpt)) {
+              namedVectors = true;
+            }
+            log.info("namedVectors Value: {}", namedVectors);
+            
+            opType = "";
+            if (cmdLine.hasOption(opTypeOpt)) {
+                opType = cmdLine.getValue(opTypeOpt).toString();
+            }
+            log.info("opType Value: " + opType);
+            
+            inputDir = "";
+            if (cmdLine.hasOption(inputDirOpt)) {
+                inputDir = cmdLine.getValue(inputDirOpt).toString();
+            }
+            log.info("InputDir Value: {}", inputDir);
+            
+            kValue = 3;
+            if (cmdLine.hasOption(kValueOpt)) {
+                kValue = Integer.parseInt((String) cmdLine
+                        .getValue(kValueOpt));
+            }
+            log.info("kmeans k value: {}", kValue);
+
+            convergenceDelta = 0.01;
+            if (cmdLine.hasOption(convergenceDeltaOpt)) {
+                convergenceDelta = Double.parseDouble((String) cmdLine
+                        .getValue(convergenceDeltaOpt));
+            }
+            log.info("kmeans convergenceDelta value: {}", convergenceDelta);
+            
+            maxIterations = 3;
+            if (cmdLine.hasOption(maxIterationsOpt)) {
+                maxIterations = Integer.parseInt((String) cmdLine
+                        .getValue(maxIterationsOpt));
+            }
+            log.info("kmeans maxIterations value: {}", maxIterations);
+            
+            String measureClass = null;
+            if (cmdLine.hasOption(distanceMeasureOpt)) {
+                measureClass = cmdLine.getValue(distanceMeasureOpt).toString();
+            }
+            if (measureClass == null) {
+              measureClass = SquaredEuclideanDistanceMeasure.class.getName();
+            }
+            measure = ClassUtils.instantiateAs(measureClass, DistanceMeasure.class);
+            log.info("kmeans measureClass value: {}", measureClass);
+            
+        } catch (OptionException e) {
+            CommandLineUtil.printHelp(group);
+            log.error("parse para error", e);
+        }
+        return true;
     }
     
     
@@ -103,8 +483,8 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
      * output data format : key-Text, Value-StringTuple
      * @throws IOException 
      */
+    @SuppressWarnings("deprecation")
     private void text2seq(String localTextFile) throws IOException {
-        log.info("local file path : " + localTextFile);
         Configuration conf = new Configuration();
         FileSystem fs = FileSystem.get(conf);
         
@@ -159,6 +539,7 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         // delete old data
         HadoopUtil.delete(conf, vectorDir);
         
+        log.info("Calculating TF into : " + vectorDir + tfDirName);
         DictionaryVectorizer.createTermFrequencyVectors(
                 new Path(originalDataDir, "seqdata"),
                 vectorDir,
@@ -173,6 +554,7 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
                 chunkSize,
                 sequentialAccessOutput,
                 namedVectors);
+        log.info("Calculating TF-vector done.");
     }
     
     private Pair<Long[], List<Path>> calculateDF()
@@ -189,12 +571,13 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         HadoopUtil.delete(conf, dfDir);
         
         // calculate document frequency
-        log.info("Calculating IDF");
+        log.info("Calculating IDF into : " + dfDir);
         Pair<Long[], List<Path>> docFrequenciesFeatures = 
                 TFIDFConverter.calculateDF(tfVectorDir, 
                         dfDir, 
                         conf, 
                         chunkSize);
+        log.info("Calculating DF done.");
         return docFrequenciesFeatures;
     }
 
@@ -228,8 +611,10 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
           maxDF = (int) (100.0 * maxDFSigma * stdDev / vectorCount);
         }
         long maxDFThreshold = (long) (vectorCount * (maxDF / 100.0f));
+        log.info("Calculated maxDFThreshold is : " + maxDFThreshold);
         
         // prune the term frequency vectors
+        log.info("Pruning tf-vector into : " + prunedTFVectorDir);
         HighDFWordsPruner.pruneVectors(tfVectorDir,
                 prunedTFVectorDir,
                 prunedPartialTFDir,
@@ -240,6 +625,7 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
                 -1.0f,
                 false,
                 reduceTasks);
+        log.info("Prune TF-vector done.");
     }
     
     private void calculateTfIdf(Pair<Long[], List<Path>> docFrequenciesFeatures)
@@ -250,6 +636,8 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         String prunedTfVectorDirName = "tf-vectors-pruned";
         Path prunedTFVectorDir = new Path(vectorDir, prunedTfVectorDirName);
         // tf-idf weighted vector path
+        // tfidfVectorDirName should be same as TFIDFConverter.DOCUMENT_VECTOR_OUTPUT_FOLDER which
+        // is invisible for public
         String tfidfVectorDirName = "tfidf-vectors";
         Path tfidfVectorDir = new Path(vectorDir, tfidfVectorDirName);
         
@@ -257,9 +645,12 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         HadoopUtil.delete(conf, tfidfVectorDir);
         
         // calculate tf-idf weight
+        // this method will generate tfidf-vectors into "tfidf-vectors" directory automatically, 
+        // so the output para just need vectors' home path "video_tags_kmean_job/vectors"
+        log.info("Calculating tfidf-vector into : " + tfidfVectorDir);
         TFIDFConverter.processTfIdf(
                 prunedTFVectorDir,
-                tfidfVectorDir, 
+                vectorDir, 
                 conf, 
                 docFrequenciesFeatures, 
                 minDf, 
@@ -269,12 +660,13 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
                 sequentialAccessOutput, 
                 namedVectors, 
                 reduceTasks);
+        log.info("Calculating tfidf-vector done");
     }
     
     private void doClusteringJob() throws IOException, InterruptedException, ClassNotFoundException {
         // vector data path
         Path vectorDir = new Path(JOB_PATH, VECTOR_PATH);
-        // pruned tfidf-vector path
+        // tfidf-vector path
         String tfidfVectorDirName = "tfidf-vectors";
         Path tfidfVectorDir = new Path(vectorDir, tfidfVectorDirName);
         
@@ -297,15 +689,19 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
 //        Path directoryContainingConvertedInput = new Path(output, DIRECTORY_CONTAINING_CONVERTED_INPUT);
 //        log.info("Preparing Input");
 //        InputDriver.runJob(input, directoryContainingConvertedInput, "org.apache.mahout.math.RandomAccessSparseVector");
+        
+        HadoopUtil.delete(conf, clusterPath);
+        
         log.info("Running random seed to get initial clusters");
+        log.info("Clusters' path : " + clusterPath);
         Path initCluster = new Path(clusterPath, "random-seeds");
         initCluster = RandomSeedGenerator.buildRandom(conf, 
                 tfidfVectorDir, 
                 initCluster, 
-                k, 
-                new EuclideanDistanceMeasure());
+                kValue, 
+                measure);
         
-        log.info("Running KMeans with k = {}", k);
+        log.info("Running KMeans with k = {}", kValue);
         KMeansDriver.run(conf, 
                 tfidfVectorDir, 
                 initCluster, 
@@ -315,6 +711,7 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
                 true, 
                 0.0, 
                 false);
+        log.info("KMeans job done.");
     }
     
     private void dumpResult() {
@@ -333,15 +730,36 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         ToolRunner.run(new VideoTagsKMeansClustering(), args);
     }
 
+    /**
+     * hadoop jar mahout9all-Option.jar -ot 1 -i ~/data.txt -nv -seq -s 5 -md 3 -x 50
+     * hadoop jar mahout9all-Option.jar -ot 2 -k 4 -mi 10 -delta 0.1 -dm org.apache.mahout.common.distance.CosineDistanceMeasure
+     * hadoop jar mahout9all-Option.jar -i ~/data.txt -nv -seq -s 5 -md 3 -x 50 -k 4 -mi 10 -delta 0.1 -dm org.apache.mahout.common.distance.CosineDistanceMeasure
+     */
     public int run(String[] args) throws Exception {
-        init();
-        text2seq(args[0]);
-        calculateTF();
-//        Pair<Long[], List<Path>> docFrequenciesFeatures = calculateDF();
-//        pruneVectors(docFrequenciesFeatures);
-//        calculateTfIdf(docFrequenciesFeatures);
-//        doClusteringJob();
-//        dumpResult();
+        if (!init(args)) {
+            log.error("Init failed !");
+            return -1;
+        }
+        if (OP_TYPE_ONLY_VECTORIZE.equals(opType)) { // only prepare vectors data
+            log.info("only prepare vectors data");
+            text2seq(inputDir);
+            calculateTF();
+            Pair<Long[], List<Path>> docFrequenciesFeatures = calculateDF();
+            pruneVectors(docFrequenciesFeatures);
+            calculateTfIdf(docFrequenciesFeatures);
+        } else if (OP_TYPE_ONLY_CLUSTERING.equals(opType)) { // only run kmeans job
+            log.info("only run kmeans job");
+            doClusteringJob();
+        } else { // do all things
+            log.info("do all things");
+            text2seq(inputDir);
+            calculateTF();
+            Pair<Long[], List<Path>> docFrequenciesFeatures = calculateDF();
+            pruneVectors(docFrequenciesFeatures);
+            calculateTfIdf(docFrequenciesFeatures);
+            doClusteringJob();
+            dumpResult();
+        }
         return 0;
     }
     
