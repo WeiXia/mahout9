@@ -4,6 +4,7 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.List;
 
 import org.apache.commons.cli2.CommandLine;
@@ -16,6 +17,7 @@ import org.apache.commons.cli2.builder.GroupBuilder;
 import org.apache.commons.cli2.commandline.Parser;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.Text;
@@ -32,6 +34,8 @@ import org.apache.mahout.common.commandline.DefaultOptionCreator;
 import org.apache.mahout.common.distance.DistanceMeasure;
 import org.apache.mahout.common.distance.SquaredEuclideanDistanceMeasure;
 import org.apache.mahout.math.hadoop.stats.BasicStats;
+import org.apache.mahout.utils.SequenceFileDumper;
+import org.apache.mahout.utils.clustering.ClusterDumper;
 import org.apache.mahout.vectorizer.DictionaryVectorizer;
 import org.apache.mahout.vectorizer.HighDFWordsPruner;
 import org.apache.mahout.vectorizer.collocations.llr.LLRReducer;
@@ -82,6 +86,8 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
     
     private static final String OP_TYPE_ONLY_CLUSTERING = "2";
     
+    private static final String OP_TYPE_ONLY_DUMP = "3";
+    
     private String opType = null;
     
     private String inputDir = null;
@@ -119,7 +125,6 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
             return false;
         }
         conf = getConf();
-//        FileSystem fs = FileSystem.get(conf);
         return true;
     }
     
@@ -135,7 +140,7 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
                         abuilder.withName("opType").withMinimum(1)
                                 .withMaximum(1).create())
                 .withDescription(
-                        "1 prepare vectors; 2 run kmeans job; default do all things together")
+                        "1 prepare vectors; 2 run kmeans job; 3 dump cluster and points; default do all things together")
                 .withShortName("ot").create();
 
         Option inputDirOpt = DefaultOptionCreator.inputOption().create();
@@ -282,28 +287,28 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         
         Option kValueOpt = obuilder
                 .withLongName("kValue")
-                .withRequired(true)
+//                .withRequired(true)
                 .withArgument(abuilder.withName("kValue").withMinimum(1).withMaximum(1).create())
                 .withDescription("k-means k value")
                 .withShortName("k").create();
         
         Option convergenceDeltaOpt = obuilder
                 .withLongName("convergenceDelta")
-                .withRequired(true)
+//                .withRequired(true)
                 .withArgument(abuilder.withName("convergenceDelta").withMinimum(1).withMaximum(1).create())
                 .withDescription("k-means convergenceDelta value")
                 .withShortName("delta").create();
         
         Option maxIterationsOpt = obuilder
                 .withLongName("maxIterations")
-                .withRequired(true)
+//                .withRequired(true)
                 .withArgument(abuilder.withName("maxIterations").withMinimum(1).withMaximum(1).create())
                 .withDescription("k-means maxIterations value")
                 .withShortName("mi").create();
         
         Option distanceMeasureOpt = obuilder
                 .withLongName("distanceMeasure")
-                .withRequired(true)
+//                .withRequired(true)
                 .withArgument(abuilder.withName("distanceMeasure").withMinimum(1).withMaximum(1).create())
                 .withDescription("k-means distance measure class name")
                 .withShortName("dm").create();
@@ -692,8 +697,8 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         
         HadoopUtil.delete(conf, clusterPath);
         
-        log.info("Running random seed to get initial clusters");
         log.info("Clusters' path : " + clusterPath);
+        log.info("Running random seed to get initial clusters");
         Path initCluster = new Path(clusterPath, "random-seeds");
         initCluster = RandomSeedGenerator.buildRandom(conf, 
                 tfidfVectorDir, 
@@ -701,6 +706,7 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
                 kValue, 
                 measure);
         
+        log.info("@\n@\n@\n@\n@\n");
         log.info("Running KMeans with k = {}", kValue);
         KMeansDriver.run(conf, 
                 tfidfVectorDir, 
@@ -714,16 +720,35 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         log.info("KMeans job done.");
     }
     
-    private void dumpResult() {
-
+    private void dumpResult() throws Exception {
+        FileSystem fs = FileSystem.get(conf);
+        Path[] clusterPaths = FileUtil.stat2Paths(fs.listStatus(new Path(JOB_PATH + "/" + CLUSTER_PATH)));
+        String finalClusterPath = null;
+        for (int i = 0; i < clusterPaths.length; i++) {
+            String path = clusterPaths[i].toString();
+            if (path.contains("final")) {
+                finalClusterPath = path;
+                break;
+            }
+        }
+        if (finalClusterPath == null) {
+            throw new Exception("Final cluster is not found !");
+        }
+        log.info("found final cluster {}", finalClusterPath);
         // use clusterdump to dump clusters
-        // -i clusters-x-final
-        // -d dictionary.file-0
-        // -dt sequencefile
-        // -n 20
+        String[] clusterDumpPara = {"-i", finalClusterPath,
+                "-o", "video_tags_clusters_dump",
+                "-d", "video_tags_kmean_job/vectors/dictionary.file-0",
+                "-dt", "sequencefile",
+//                "-p", "video_tags_kmean_job/clusters/clusteredPoints",
+                "-n", "20"};
+        log.info("dumping clusters. para: " + Arrays.asList(clusterDumpPara).toString() );
+        new ClusterDumper().run(clusterDumpPara);
         
         // use seqdumper to dump videos and clusters
-        // -i clusteredPoints
+        String[] seqDumpPara = {"-i", "video_tags_kmean_job/clusters/clusteredPoints",
+                "-o", "cluster_points_dump"};
+        new SequenceFileDumper().run(seqDumpPara);
     }
     
     public static void main(String args[]) throws Exception {
@@ -750,6 +775,8 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         } else if (OP_TYPE_ONLY_CLUSTERING.equals(opType)) { // only run kmeans job
             log.info("only run kmeans job");
             doClusteringJob();
+        } else if (OP_TYPE_ONLY_DUMP.equals(opType)) { // only dump result
+            dumpResult();
         } else { // do all things
             log.info("do all things");
             text2seq(inputDir);
