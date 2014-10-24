@@ -502,6 +502,7 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         // delete old seq data
         HadoopUtil.delete(conf, seqData);
         
+        log.info("\n@\n@\n@\n");
         // prepare local file reader
         BufferedReader reader = null;
         reader = new BufferedReader(new FileReader(file));
@@ -515,13 +516,13 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         while ((tempString = reader.readLine()) != null) {
 //            System.out.println("line " + line + ": " + tempString);
 //            line++;
-            String[] data = tempString.split(" ");
-            String videoId = data[0];
+            String[] data = tempString.split("\\|");
+            String id = data[0];
             StringTuple tags = new StringTuple();
             for (int i = 1; i < data.length - 1; i++) {
                 tags.add(data[i]);
             }
-            writer.append(new Text(videoId), tags);
+            writer.append(new Text(id), tags);
         }
         reader.close();
         writer.close();
@@ -544,6 +545,7 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         // delete old data
         HadoopUtil.delete(conf, vectorDir);
         
+        log.info("\n@\n@\n@\n");
         log.info("Calculating TF into : " + vectorDir + tfDirName);
         DictionaryVectorizer.createTermFrequencyVectors(
                 new Path(originalDataDir, "seqdata"),
@@ -576,6 +578,7 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         HadoopUtil.delete(conf, dfDir);
         
         // calculate document frequency
+        log.info("\n@\n@\n@\n");
         log.info("Calculating IDF into : " + dfDir);
         Pair<Long[], List<Path>> docFrequenciesFeatures = 
                 TFIDFConverter.calculateDF(tfVectorDir, 
@@ -603,6 +606,7 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         HadoopUtil.delete(conf, prunedTFVectorDir);
         HadoopUtil.delete(conf, prunedPartialTFDir);
         
+        log.info("\n@\n@\n@\n");
         // calculate threshold
         // TODO to be understand
         long maxDF = maxDFPercent;
@@ -652,6 +656,7 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         // calculate tf-idf weight
         // this method will generate tfidf-vectors into "tfidf-vectors" directory automatically, 
         // so the output para just need vectors' home path "video_tags_kmean_job/vectors"
+        log.info("\n@\n@\n@\n");
         log.info("Calculating tfidf-vector into : " + tfidfVectorDir);
         TFIDFConverter.processTfIdf(
                 prunedTFVectorDir,
@@ -697,17 +702,19 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         
         HadoopUtil.delete(conf, clusterPath);
         
+        log.info("\n@\n@\n@\n");
         log.info("Clusters' path : " + clusterPath);
-        log.info("Running random seed to get initial clusters");
         Path initCluster = new Path(clusterPath, "random-seeds");
+        log.info("Running random seed to get initial clusters : " + initCluster);
+        // choose random init clusters
         initCluster = RandomSeedGenerator.buildRandom(conf, 
                 tfidfVectorDir, 
                 initCluster, 
                 kValue, 
                 measure);
         
-        log.info("@\n@\n@\n@\n@\n");
         log.info("Running KMeans with k = {}", kValue);
+        // run k-means job
         KMeansDriver.run(conf, 
                 tfidfVectorDir, 
                 initCluster, 
@@ -721,6 +728,7 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
     }
     
     private void dumpResult() throws Exception {
+        log.info("\n@\n@\n@\n");
         FileSystem fs = FileSystem.get(conf);
         Path[] clusterPaths = FileUtil.stat2Paths(fs.listStatus(new Path(JOB_PATH + "/" + CLUSTER_PATH)));
         String finalClusterPath = null;
@@ -740,8 +748,8 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
                 "-o", "video_tags_clusters_dump",
                 "-d", "video_tags_kmean_job/vectors/dictionary.file-0",
                 "-dt", "sequencefile",
-//                "-p", "video_tags_kmean_job/clusters/clusteredPoints",
-                "-n", "20"};
+                "-p", "video_tags_kmean_job/clusters/clusteredPoints",
+                "-n", "50"};
         log.info("dumping clusters. para: " + Arrays.asList(clusterDumpPara).toString() );
         new ClusterDumper().run(clusterDumpPara);
         
@@ -758,6 +766,7 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
     /**
      * hadoop jar mahout9all-Option.jar -ot 1 -i ~/data.txt -nv -seq -s 5 -md 3 -x 50
      * hadoop jar mahout9all-Option.jar -ot 2 -k 4 -mi 10 -delta 0.1 -dm org.apache.mahout.common.distance.CosineDistanceMeasure
+     * mahout clusterdump -i video_tags_kmean_job/clusters/clusters-x-final -o ~/video_tags_clusters_dump -p video_tags_kmean_job/clusters/clusteredPoints -d video_tags_kmean_job/vectors/dictionary.file-0 -dt sequencefile -n 50
      * hadoop jar mahout9all-Option.jar -i ~/data.txt -nv -seq -s 5 -md 3 -x 50 -k 4 -mi 10 -delta 0.1 -dm org.apache.mahout.common.distance.CosineDistanceMeasure
      */
     public int run(String[] args) throws Exception {
