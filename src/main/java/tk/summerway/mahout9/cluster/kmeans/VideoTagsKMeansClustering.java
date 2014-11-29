@@ -4,6 +4,7 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -22,6 +23,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.util.ToolRunner;
+import org.apache.mahout.clustering.canopy.CanopyDriver;
 import org.apache.mahout.clustering.kmeans.KMeansDriver;
 import org.apache.mahout.clustering.kmeans.RandomSeedGenerator;
 import org.apache.mahout.common.AbstractJob;
@@ -33,9 +35,10 @@ import org.apache.mahout.common.StringTuple;
 import org.apache.mahout.common.commandline.DefaultOptionCreator;
 import org.apache.mahout.common.distance.DistanceMeasure;
 import org.apache.mahout.common.distance.SquaredEuclideanDistanceMeasure;
+import org.apache.mahout.math.Vector;
+import org.apache.mahout.math.VectorWritable;
 import org.apache.mahout.math.hadoop.stats.BasicStats;
 import org.apache.mahout.utils.SequenceFileDumper;
-import org.apache.mahout.utils.clustering.ClusterDumper;
 import org.apache.mahout.vectorizer.DictionaryVectorizer;
 import org.apache.mahout.vectorizer.HighDFWordsPruner;
 import org.apache.mahout.vectorizer.collocations.llr.LLRReducer;
@@ -43,6 +46,9 @@ import org.apache.mahout.vectorizer.common.PartialVectorMerger;
 import org.apache.mahout.vectorizer.tfidf.TFIDFConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import tk.summerway.mahout9.tools.MyClusterDumper;
+import tk.summerway.mahout9.tools.RandomPointsUtil;
 
 /**
  * directory structure
@@ -91,6 +97,9 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
     private String opType = null;
     
     private String inputDir = null;
+    
+    // the minimum tag count that video or ugc member has
+    private static int MIN_TAG_COUNT = 10;
     
     // the minimum frequency of the feature in the entire corpus to be considered for inclusion in the sparse vector
     private int minSupport = 2;
@@ -517,6 +526,10 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
 //            System.out.println("line " + line + ": " + tempString);
 //            line++;
             String[] data = tempString.split("\\|");
+            if (data.length < MIN_TAG_COUNT) {
+                continue;
+            }
+            // TODO stop words filter
             String id = data[0];
             StringTuple tags = new StringTuple();
             for (int i = 1; i < data.length - 1; i++) {
@@ -726,11 +739,109 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
                 false);
         log.info("KMeans job done.");
     }
+
+    private void doClusteringJobWithCanopy() throws Exception {
+        // vector data path
+        Path vectorDir = new Path(JOB_PATH, VECTOR_PATH);
+        // tfidf-vector path
+        String tfidfVectorDirName = "tfidf-vectors";
+        Path tfidfVectorDir = new Path(vectorDir, tfidfVectorDirName);
+        
+        // cluster data path
+        Path clusterPath = new Path(JOB_PATH, CLUSTER_PATH);
+        HadoopUtil.delete(conf, clusterPath);
+        
+        log.info("\n@\n@\n@\n");
+        
+        log.info("Start to calculate t value...");
+        log.info("Reading tfidf-vectors...");
+        FileSystem fs = tfidfVectorDir.getFileSystem(conf);
+        @SuppressWarnings("deprecation")
+        SequenceFile.Reader reader = new SequenceFile.Reader(fs, new Path(tfidfVectorDir, "part-r-00000"), conf);
+        Text key = new Text();
+        VectorWritable value = new VectorWritable();
+        List<Vector> tifidfVectors = new ArrayList<Vector>();
+        while (reader.next(key, value)) {
+            tifidfVectors.add(value.get());
+//            System.out.println(key.toString() + " " + value.get().asFormatString());
+        }
+        reader.close();
+        
+        // choose 1/10 vectors from tfidf-vectors as random vectors
+        log.info("System will choose " + (tifidfVectors.size() / 10) + " random vectors.");
+        List<Vector> randomVectors = RandomPointsUtil.chooseRandomPoints(
+                tifidfVectors, (tifidfVectors.size() / 10));
+        double sum = 0;
+        if (randomVectors.size() <= 1) {
+            throw new Exception("Choose random vector failed! You need at least two vectors to calculate distance!");
+        }
+        log.info("Calculating t value...");
+        for (int i = 1; i < randomVectors.size(); i++) {
+            double d = measure.distance(randomVectors.get(i - 1), randomVectors.get(i));
+            sum = sum + d;
+            log.info("distance = " + d + " sum = " + sum);
+        }
+        double averageDistance = sum / (randomVectors.size() - 1);
+        double t1 = averageDistance * 1.3;
+        double t2 = t1 / 2;
+        log.info("t1 = " + t1);
+        log.info("t2 = " + t2);
+        
+//        Path vectorsFolder = new Path(outputDir, "tfidf-vectors");
+//        Path canopyCentroids = new Path(outputDir , "canopy-centroids");
+//        Path clusterOutput = new Path(outputDir , "clusters");
+        
+        log.info("Clusters' path : " + clusterPath);
+        Path initCluster = new Path(clusterPath, "canopy-centroids");
+        log.info("Running canopy to get initial clusters : " + initCluster);
+        CanopyDriver.run(tfidfVectorDir, 
+                initCluster,
+                measure, 
+                t1, 
+                t2, 
+                false, 
+                0.0, 
+                false);
+        
+//        KMeansDriver.run(conf, 
+//                vectorsFolder, 
+//                new Path(canopyCentroids, "clusters-0-final"),
+//                clusterOutput, 
+//                0.01, 
+//                20, 
+//                true, 
+//                0.0, 
+//                false);
+        KMeansDriver.run(conf, 
+                tfidfVectorDir, 
+                new Path(initCluster, "clusters-0-final"), 
+                clusterPath, 
+                convergenceDelta,
+                maxIterations, 
+                true, 
+                0.0, 
+                false);
+        
+//        FuzzyKMeansDriver.run(conf, 
+//                tfidfVectorDir, 
+//                new Path(initCluster, "clusters-0-final"), 
+//                clusterPath, 
+//                convergenceDelta, 
+//                maxIterations,
+//                3, 
+//                true, 
+//                true, 
+//                0.0, 
+//                false);
+        
+        log.info("KMeans job done.");
+    }
     
     private void dumpResult() throws Exception {
         log.info("\n@\n@\n@\n");
+        Path clusterOutputPath = new Path(JOB_PATH, CLUSTER_PATH); // JOB_PATH + "/" + CLUSTER_PATH
         FileSystem fs = FileSystem.get(conf);
-        Path[] clusterPaths = FileUtil.stat2Paths(fs.listStatus(new Path(JOB_PATH + "/" + CLUSTER_PATH)));
+        Path[] clusterPaths = FileUtil.stat2Paths(fs.listStatus(clusterOutputPath));
         String finalClusterPath = null;
         for (int i = 0; i < clusterPaths.length; i++) {
             String path = clusterPaths[i].toString();
@@ -739,9 +850,16 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
                 break;
             }
         }
+        
+        // TODO to be tested.
+//        FileSystem fileSystem = clusterOutputPath.getFileSystem(conf);
+//        FileStatus[] clusterFiles = fileSystem.listStatus(clusterOutputPath, PathFilters.finalPartFilter());
+//        finalClusterPath = clusterFiles[0].getPath().toString();
+        
         if (finalClusterPath == null) {
             throw new Exception("Final cluster is not found !");
         }
+        
         log.info("found final cluster {}", finalClusterPath);
         // use clusterdump to dump clusters
         String[] clusterDumpPara = {"-i", finalClusterPath,
@@ -751,7 +869,7 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
                 "-p", "video_tags_kmean_job/clusters/clusteredPoints",
                 "-n", "50"};
         log.info("dumping clusters. para: " + Arrays.asList(clusterDumpPara).toString() );
-        new ClusterDumper().run(clusterDumpPara);
+        new MyClusterDumper().run(clusterDumpPara);
         
         // use seqdumper to dump videos and clusters
         String[] seqDumpPara = {"-i", "video_tags_kmean_job/clusters/clusteredPoints",
@@ -783,7 +901,8 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
             calculateTfIdf(docFrequenciesFeatures);
         } else if (OP_TYPE_ONLY_CLUSTERING.equals(opType)) { // only run kmeans job
             log.info("only run kmeans job");
-            doClusteringJob();
+//            doClusteringJob();
+            doClusteringJobWithCanopy();
         } else if (OP_TYPE_ONLY_DUMP.equals(opType)) { // only dump result
             dumpResult();
         } else { // do all things
@@ -793,7 +912,8 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
             Pair<Long[], List<Path>> docFrequenciesFeatures = calculateDF();
             pruneVectors(docFrequenciesFeatures);
             calculateTfIdf(docFrequenciesFeatures);
-            doClusteringJob();
+//            doClusteringJob();
+            doClusteringJobWithCanopy();
             dumpResult();
         }
         return 0;
