@@ -17,8 +17,8 @@ import org.apache.commons.cli2.builder.DefaultOptionBuilder;
 import org.apache.commons.cli2.builder.GroupBuilder;
 import org.apache.commons.cli2.commandline.Parser;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.Text;
@@ -35,6 +35,7 @@ import org.apache.mahout.common.StringTuple;
 import org.apache.mahout.common.commandline.DefaultOptionCreator;
 import org.apache.mahout.common.distance.DistanceMeasure;
 import org.apache.mahout.common.distance.SquaredEuclideanDistanceMeasure;
+import org.apache.mahout.common.iterator.sequencefile.PathFilters;
 import org.apache.mahout.math.Vector;
 import org.apache.mahout.math.VectorWritable;
 import org.apache.mahout.math.hadoop.stats.BasicStats;
@@ -153,8 +154,6 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
                 .withShortName("ot").create();
 
         Option inputDirOpt = DefaultOptionCreator.inputOption().create();
-//
-//        Option outputDirOpt = DefaultOptionCreator.outputOption().create();
 
         Option minSupportOpt = obuilder
                 .withLongName("minSupport")
@@ -177,16 +176,6 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
                 .withDescription(
                         "The chunkSize in MegaBytes. Default Value: 100MB")
                 .withShortName("chunk").create();
-
-//        Option weightOpt = obuilder
-//                .withLongName("weight")
-//                .withRequired(false)
-//                .withArgument(
-//                        abuilder.withName("weight").withMinimum(1)
-//                                .withMaximum(1).create())
-//                .withDescription(
-//                        "The kind of weight to use. Currently TF or TFIDF. Default: TFIDF")
-//                .withShortName("wt").create();
 
         Option minDFOpt = obuilder
                 .withLongName("minDF")
@@ -285,39 +274,30 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
                 .withDescription(
                         "(Optional) Whether output vectors should be NamedVectors. If set true else false")
                 .withShortName("nv").create();
-
-//        Option overwriteOutput = obuilder.withLongName("overwrite")
-//                .withRequired(false)
-//                .withDescription("If set, overwrite the output directory")
-//                .withShortName("ow").create();
         
         Option helpOpt = obuilder.withLongName("help")
                 .withDescription("Print out help").withShortName("h").create();
         
         Option kValueOpt = obuilder
                 .withLongName("kValue")
-//                .withRequired(true)
                 .withArgument(abuilder.withName("kValue").withMinimum(1).withMaximum(1).create())
                 .withDescription("k-means k value")
                 .withShortName("k").create();
         
         Option convergenceDeltaOpt = obuilder
                 .withLongName("convergenceDelta")
-//                .withRequired(true)
                 .withArgument(abuilder.withName("convergenceDelta").withMinimum(1).withMaximum(1).create())
                 .withDescription("k-means convergenceDelta value")
                 .withShortName("delta").create();
         
         Option maxIterationsOpt = obuilder
                 .withLongName("maxIterations")
-//                .withRequired(true)
                 .withArgument(abuilder.withName("maxIterations").withMinimum(1).withMaximum(1).create())
                 .withDescription("k-means maxIterations value")
                 .withShortName("mi").create();
         
         Option distanceMeasureOpt = obuilder
                 .withLongName("distanceMeasure")
-//                .withRequired(true)
                 .withArgument(abuilder.withName("distanceMeasure").withMinimum(1).withMaximum(1).create())
                 .withDescription("k-means distance measure class name")
                 .withShortName("dm").create();
@@ -347,9 +327,6 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
                 CommandLineUtil.printHelp(group);
                 return false;
             }
-
-//            Path inputDir = new Path((String) cmdLine.getValue(inputDirOpt));
-//            Path outputDir = new Path((String) cmdLine.getValue(outputDirOpt));
             
             chunkSize = 100;
             if (cmdLine.hasOption(chunkSizeOpt)) {
@@ -376,10 +353,6 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
                 }
             }
             log.info("Maximum n-gram size is: {}", maxNGramSize);
-
-//            if (cmdLine.hasOption(overwriteOutput)) {
-//                HadoopUtil.delete(getConf(), outputDir);
-//            }
 
             minLLRValue = LLRReducer.DEFAULT_MIN_LLR;
             if (cmdLine.hasOption(minLLROpt)) {
@@ -520,11 +493,8 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
                 seqData, Text.class, StringTuple.class);
         
         String tempString = null;
-//        int line = 1;
         log.info("wiriting data to seq file : " + seqData);
         while ((tempString = reader.readLine()) != null) {
-//            System.out.println("line " + line + ": " + tempString);
-//            line++;
             String[] data = tempString.split("\\|");
             if (data.length < MIN_TAG_COUNT) {
                 continue;
@@ -696,23 +666,6 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         // cluster data path
         Path clusterPath = new Path(JOB_PATH, CLUSTER_PATH);
         
-//        Path canopyCentroids = new Path(vectorPath , "canopy-centroids");
-//        // using canopy to chose initail cluster
-//        CanopyDriver.run(conf,
-//                vectorsFolder, 
-//                canopyCentroids,
-//                new EuclideanDistanceMeasure(), 
-//                250, 
-//                120, 
-//                false,
-//                0,
-//                false);
-        
-        // run kmeans cluster
-//        Path directoryContainingConvertedInput = new Path(output, DIRECTORY_CONTAINING_CONVERTED_INPUT);
-//        log.info("Preparing Input");
-//        InputDriver.runJob(input, directoryContainingConvertedInput, "org.apache.mahout.math.RandomAccessSparseVector");
-        
         HadoopUtil.delete(conf, clusterPath);
         
         log.info("\n@\n@\n@\n");
@@ -763,7 +716,6 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         List<Vector> tifidfVectors = new ArrayList<Vector>();
         while (reader.next(key, value)) {
             tifidfVectors.add(value.get());
-//            System.out.println(key.toString() + " " + value.get().asFormatString());
         }
         reader.close();
         
@@ -787,10 +739,6 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
         log.info("t1 = " + t1);
         log.info("t2 = " + t2);
         
-//        Path vectorsFolder = new Path(outputDir, "tfidf-vectors");
-//        Path canopyCentroids = new Path(outputDir , "canopy-centroids");
-//        Path clusterOutput = new Path(outputDir , "clusters");
-        
         log.info("Clusters' path : " + clusterPath);
         Path initCluster = new Path(clusterPath, "canopy-centroids");
         log.info("Running canopy to get initial clusters : " + initCluster);
@@ -803,15 +751,6 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
                 0.0, 
                 false);
         
-//        KMeansDriver.run(conf, 
-//                vectorsFolder, 
-//                new Path(canopyCentroids, "clusters-0-final"),
-//                clusterOutput, 
-//                0.01, 
-//                20, 
-//                true, 
-//                0.0, 
-//                false);
         KMeansDriver.run(conf, 
                 tfidfVectorDir, 
                 new Path(initCluster, "clusters-0-final"), 
@@ -840,21 +779,21 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
     private void dumpResult() throws Exception {
         log.info("\n@\n@\n@\n");
         Path clusterOutputPath = new Path(JOB_PATH, CLUSTER_PATH); // JOB_PATH + "/" + CLUSTER_PATH
-        FileSystem fs = FileSystem.get(conf);
-        Path[] clusterPaths = FileUtil.stat2Paths(fs.listStatus(clusterOutputPath));
         String finalClusterPath = null;
-        for (int i = 0; i < clusterPaths.length; i++) {
-            String path = clusterPaths[i].toString();
-            if (path.contains("final")) {
-                finalClusterPath = path;
-                break;
-            }
-        }
+//        FileSystem fs = FileSystem.get(conf);
+//        Path[] clusterPaths = FileUtil.stat2Paths(fs.listStatus(clusterOutputPath));
+//        for (int i = 0; i < clusterPaths.length; i++) {
+//            String path = clusterPaths[i].toString();
+//            if (path.contains("final")) {
+//                finalClusterPath = path;
+//                break;
+//            }
+//        }
         
         // TODO to be tested.
-//        FileSystem fileSystem = clusterOutputPath.getFileSystem(conf);
-//        FileStatus[] clusterFiles = fileSystem.listStatus(clusterOutputPath, PathFilters.finalPartFilter());
-//        finalClusterPath = clusterFiles[0].getPath().toString();
+        FileSystem fileSystem = clusterOutputPath.getFileSystem(conf);
+        FileStatus[] clusterFiles = fileSystem.listStatus(clusterOutputPath, PathFilters.finalPartFilter());
+        finalClusterPath = clusterFiles[0].getPath().toString();
         
         if (finalClusterPath == null) {
             throw new Exception("Final cluster is not found !");
