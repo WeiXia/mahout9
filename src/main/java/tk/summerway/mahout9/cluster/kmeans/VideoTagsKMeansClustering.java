@@ -100,7 +100,7 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
     private String inputDir = null;
     
     // the minimum tag count that video or ugc member has
-    private static int MIN_TAG_COUNT = 10;
+    private static int MIN_TAG_COUNT = 50;
     
     // the minimum frequency of the feature in the entire corpus to be considered for inclusion in the sparse vector
     private int minSupport = 2;
@@ -472,6 +472,7 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
      */
     @SuppressWarnings("deprecation")
     private void text2seq(String localTextFile) throws IOException {
+        String stopWordsRegx = "(优酷)*(原创)*(拍客)*(自拍)*(视频)*(牛人)*(dv)*(null)*|(20|19)\\d\\d(年)*";
         Configuration conf = new Configuration();
         FileSystem fs = FileSystem.get(conf);
         
@@ -499,11 +500,16 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
             if (data.length < MIN_TAG_COUNT) {
                 continue;
             }
-            // TODO stop words filter
             String id = data[0];
+            String valueString = "";
             StringTuple tags = new StringTuple();
             for (int i = 1; i < data.length - 1; i++) {
-                tags.add(data[i]);
+                valueString = data[i].toLowerCase();
+                // TODO stop words filter
+                if (valueString.matches(stopWordsRegx)) {
+                    continue;
+                }
+                tags.add(valueString);
             }
             writer.append(new Text(id), tags);
         }
@@ -840,8 +846,8 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
             calculateTfIdf(docFrequenciesFeatures);
         } else if (OP_TYPE_ONLY_CLUSTERING.equals(opType)) { // only run kmeans job
             log.info("only run kmeans job");
-//            doClusteringJob();
-            doClusteringJobWithCanopy();
+            doClusteringJob();
+//            doClusteringJobWithCanopy();
         } else if (OP_TYPE_ONLY_DUMP.equals(opType)) { // only dump result
             dumpResult();
         } else { // do all things
@@ -851,8 +857,8 @@ public class VideoTagsKMeansClustering extends AbstractJob  {
             Pair<Long[], List<Path>> docFrequenciesFeatures = calculateDF();
             pruneVectors(docFrequenciesFeatures);
             calculateTfIdf(docFrequenciesFeatures);
-//            doClusteringJob();
-            doClusteringJobWithCanopy();
+            doClusteringJob();
+//            doClusteringJobWithCanopy();
             dumpResult();
         }
         return 0;
