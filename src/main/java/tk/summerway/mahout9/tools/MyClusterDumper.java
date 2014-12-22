@@ -37,15 +37,11 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IntWritable;
-import org.apache.mahout.clustering.cdbw.CDbwEvaluator;
 import org.apache.mahout.clustering.classify.WeightedPropertyVectorWritable;
-import org.apache.mahout.clustering.evaluation.ClusterEvaluator;
-import org.apache.mahout.clustering.evaluation.RepresentativePointsDriver;
 import org.apache.mahout.clustering.iterator.ClusterWritable;
 import org.apache.mahout.common.AbstractJob;
 import org.apache.mahout.common.ClassUtils;
 import org.apache.mahout.common.CommandLineUtil;
-import org.apache.mahout.common.HadoopUtil;
 import org.apache.mahout.common.Pair;
 import org.apache.mahout.common.commandline.DefaultOptionCreator;
 import org.apache.mahout.common.distance.DistanceMeasure;
@@ -61,6 +57,8 @@ import org.apache.mahout.utils.clustering.JsonClusterWriter;
 import org.apache.mahout.utils.vectors.VectorHelper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import tk.summerway.mahout9.cluster.kmeans.MyClusterEvaluator;
 
 import com.google.common.base.Charsets;
 import com.google.common.collect.Lists;
@@ -335,37 +333,43 @@ public final class MyClusterDumper extends AbstractJob {
 
             writer.flush();
             if (runEvaluation) {
-                HadoopUtil.delete(conf, new Path("tmp/representative"));
-                int numIters = 5;
-                RepresentativePointsDriver.main(new String[] { "--input",
-                        seqFileDir.toString(), "--output",
-                        "tmp/representative", "--clusteredPoints",
-                        pointsDir.toString(), "--distanceMeasure",
-                        measure.getClass().getName(), "--maxIter",
-                        String.valueOf(numIters) });
-                conf.set(RepresentativePointsDriver.DISTANCE_MEASURE_KEY,
-                        measure.getClass().getName());
-                conf.set(RepresentativePointsDriver.STATE_IN_KEY,
-                        "tmp/representative/representativePoints-" + numIters);
-                ClusterEvaluator ce = new ClusterEvaluator(conf, seqFileDir);
-                writer.append("\n");
-                writer.append("Inter-Cluster Density: ")
-                        .append(String.valueOf(ce.interClusterDensity()))
-                        .append("\n");
-                writer.append("Intra-Cluster Density: ")
-                        .append(String.valueOf(ce.intraClusterDensity()))
-                        .append("\n");
-                CDbwEvaluator cdbw = new CDbwEvaluator(conf, seqFileDir);
-                writer.append("CDbw Inter-Cluster Density: ")
-                        .append(String.valueOf(cdbw.interClusterDensity()))
-                        .append("\n");
-                writer.append("CDbw Intra-Cluster Density: ")
-                        .append(String.valueOf(cdbw.intraClusterDensity()))
-                        .append("\n");
-                writer.append("CDbw Separation: ")
-                        .append(String.valueOf(cdbw.separation())).append("\n");
-                writer.flush();
+                MyClusterEvaluator ce = new MyClusterEvaluator(
+                        pointsDir.toString(), seqFileDir.toString(),
+                        "~/cluster_evaluate_result.txt", measure, 1000L);
+                ce.evaluateClusters(conf);
             }
+//            if (runEvaluation) {
+//                HadoopUtil.delete(conf, new Path("tmp/representative"));
+//                int numIters = 5;
+//                RepresentativePointsDriver.main(new String[] { "--input",
+//                        seqFileDir.toString(), "--output",
+//                        "tmp/representative", "--clusteredPoints",
+//                        pointsDir.toString(), "--distanceMeasure",
+//                        measure.getClass().getName(), "--maxIter",
+//                        String.valueOf(numIters) });
+//                conf.set(RepresentativePointsDriver.DISTANCE_MEASURE_KEY,
+//                        measure.getClass().getName());
+//                conf.set(RepresentativePointsDriver.STATE_IN_KEY,
+//                        "tmp/representative/representativePoints-" + numIters);
+//                ClusterEvaluator ce = new ClusterEvaluator(conf, seqFileDir);
+//                writer.append("\n");
+//                writer.append("Inter-Cluster Density: ")
+//                        .append(String.valueOf(ce.interClusterDensity()))
+//                        .append("\n");
+//                writer.append("Intra-Cluster Density: ")
+//                        .append(String.valueOf(ce.intraClusterDensity()))
+//                        .append("\n");
+//                CDbwEvaluator cdbw = new CDbwEvaluator(conf, seqFileDir);
+//                writer.append("CDbw Inter-Cluster Density: ")
+//                        .append(String.valueOf(cdbw.interClusterDensity()))
+//                        .append("\n");
+//                writer.append("CDbw Intra-Cluster Density: ")
+//                        .append(String.valueOf(cdbw.intraClusterDensity()))
+//                        .append("\n");
+//                writer.append("CDbw Separation: ")
+//                        .append(String.valueOf(cdbw.separation())).append("\n");
+//                writer.flush();
+//            }
             log.info("Wrote {} clusters", numWritten);
         } finally {
             if (shouldClose) {
